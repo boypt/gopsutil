@@ -4,6 +4,7 @@ package disk
 
 import (
 	"context"
+	"reflect"
 	"strconv"
 
 	"golang.org/x/sys/unix"
@@ -22,13 +23,26 @@ func UsageWithContext(ctx context.Context, path string) (*UsageStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	bsize := stat.Bsize
+	// When container is run in MacOS, `bsize` obtained by `statfs` syscall is not the fundamental block size,
+	// but the `iosize` (optimal transfer block size) instead, it's usually 1024 times larger than the `bsize`.
+	// for example `4096 * 1024`. To get the correct block size, we should use `frsize`. But `frsize` isn't
+	// guaranteed to be supported everywhere, so we need to check whether it's supported before use it.
+	// For more details, please refer to: https://github.com/docker/for-mac/issues/2136
+	bSize := uint64(stat.Bsize)
+	field := reflect.ValueOf(&stat).Elem().FieldByName("Frsize")
+	if field.IsValid() {
+		if field.Kind() == reflect.Uint64 {
+			bSize = field.Uint()
+		} else {
+			bSize = uint64(field.Int())
+		}
+	}
 
 	ret := &UsageStat{
 		Path:        unescapeFstab(path),
 		Fstype:      getFsType(stat),
-		Total:       (uint64(stat.Blocks) * uint64(bsize)),
-		Free:        (uint64(stat.Bavail) * uint64(bsize)),
+		Total:       (uint64(stat.Blocks) * bSize),
+		Free:        (uint64(stat.Bavail) * bSize),
 		InodesTotal: (uint64(stat.Files)),
 		InodesFree:  (uint64(stat.Ffree)),
 	}
